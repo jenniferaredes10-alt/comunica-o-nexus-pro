@@ -537,9 +537,54 @@ const payload = {
     carregarTudo();
   }
 
-  async function salvarColuna() {
-    if (!formColuna.title.trim()) {
-      showToast("Digite o nome da coluna.", "erro");
+  async functasync function salvarColuna() {
+  if (!formColuna.title.trim()) {
+    showToast("Digite o nome da coluna.", "erro");
+    return;
+  }
+
+  const novoTitulo = formColuna.title.trim();
+
+  if (editandoColuna) {
+    const { error } = await supabase
+      .from("colunas_kanban")
+      .update({
+        title: novoTitulo,
+        cor: formColuna.cor,
+      })
+      .eq("id", editandoColuna.id);
+
+    if (error) {
+      showToast("Erro ao editar coluna: " + error.message, "erro");
+      return;
+    }
+
+    showToast("Coluna atualizada.");
+  } else {
+    const maxOrdem = colunas.reduce((m, c) => Math.max(m, c.ordem || 0), -1);
+
+    const { error } = await supabase.from("colunas_kanban").insert([
+      {
+        key: `${slugify(novoTitulo)}_${Date.now()}`,
+        title: novoTitulo,
+        cor: formColuna.cor,
+        ordem: maxOrdem + 1,
+      },
+    ]);
+
+    if (error) {
+      showToast("Erro ao criar coluna: " + error.message, "erro");
+      return;
+    }
+
+    showToast("Coluna criada.");
+  }
+
+  setModalColuna(false);
+  setEditandoColuna(null);
+  setFormColuna({ title: "", cor: "#4f7cff" });
+  carregarTudo();
+}
       return;
     }
 
@@ -578,10 +623,13 @@ const payload = {
   }
 
   function abrirEditarColuna(col) {
-    setEditandoColuna(col);
-    setFormColuna({ title: col.title, cor: col.cor || "#4f7cff" });
-    setModalColuna(true);
-  }
+  setEditandoColuna(col);
+  setFormColuna({
+    title: col.title || "",
+    cor: col.cor || "#4f7cff",
+  });
+  setModalColuna(true);
+}
 
   return (
     <div className="nx-app">
