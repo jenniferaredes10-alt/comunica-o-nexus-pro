@@ -315,9 +315,12 @@ export default function Dashboard({ sessao }) {
     }
 
     const payload = {
-      ...form,
-      mes_referencia: form.mes_referencia || mesFiltro,
-    };
+  ...form,
+  mes_referencia: form.mes_referencia || mesFiltro,
+  respondido_em: form.resposta_executor
+    ? new Date().toISOString()
+    : null,
+};
 
     if (editandoId) {
       const antiga = demandas.find((d) => d.id === editandoId);
@@ -1222,7 +1225,25 @@ function CardDemanda({ d, onClick }) {
         {d.respondido_por_nome && <span>◈ {d.respondido_por_nome}</span>}
       </div>
 
-      {d.resposta_executor && <div className="nx-card-resposta">{d.resposta_executor}</div>}
+      {d.resposta_executor && (
+  <div className="nx-card-resposta">
+    <div className="nx-card-response-header">
+      <strong>Resposta</strong>
+
+      <span>
+        {d.respondido_por_nome || "Usuário"}
+      </span>
+    </div>
+
+    <p>{d.resposta_executor}</p>
+
+    {d.respondido_em && (
+      <small>
+        {new Date(d.respondido_em).toLocaleString("pt-BR")}
+      </small>
+    )}
+  </div>
+)}
 
       <div className="nx-card-footer">
         {d.respondido_por_nome && (
