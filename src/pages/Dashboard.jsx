@@ -314,10 +314,21 @@ export default function Dashboard({ sessao }) {
       return;
     }
 
-    const payload = {
+   const temResposta = String(form.resposta_executor || "").trim().length > 0;
+
+const payload = {
   ...form,
   mes_referencia: form.mes_referencia || mesFiltro,
-  respondido_em: form.resposta_executor
+
+  respondido_por_id: temResposta
+    ? usuarioAtual?.id || form.respondido_por_id || null
+    : form.respondido_por_id || null,
+
+  respondido_por_nome: temResposta
+    ? nomeUsuario
+    : form.respondido_por_nome || "",
+
+  respondido_em: temResposta
     ? new Date().toISOString()
     : null,
 };
@@ -988,6 +999,18 @@ export default function Dashboard({ sessao }) {
                       <option value="">Selecione um usuário</option>
                       {usuarios.map((u) => <option key={u.id} value={u.id}>{u.nome || u.email}</option>)}
                     </select>
+                    <input
+                     style={{ marginTop: 8 }}
+                     placeholder="Ou digite o nome do responsável"
+                     value={form.respondido_por_nome || ""}
+                     onChange={(e) =>
+                     setForm({
+                     ...form,
+                     respondido_por_id: "",
+                     respondido_por_nome: e.target.value,
+                     })
+                     }
+                     />
                   </Field>
 
                   <Field label="Prioridade">
