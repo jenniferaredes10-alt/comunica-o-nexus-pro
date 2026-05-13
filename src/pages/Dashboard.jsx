@@ -176,7 +176,12 @@ export default function Dashboard({ sessao }) {
     setDemandas(dem);
     setCanais(can);
     setUsuarios(usr);
-    setColunas(col.length ? col : COLUNAS_PADRAO);
+    if (col && col.length > 0) {
+  setColunas(col);
+} else {
+  await supabase.from("colunas_kanban").insert(COLUNAS_PADRAO);
+  setColunas(COLUNAS_PADRAO);
+}
   }, [mesFiltro, canalAtivo]);
 
   const carregarLogsGlobais = useCallback(async () => {
