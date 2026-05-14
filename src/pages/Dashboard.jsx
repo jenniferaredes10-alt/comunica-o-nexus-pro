@@ -101,6 +101,8 @@ export default function Dashboard({ sessao }) {
   const [filtroPrioridade, setFiltroPrioridade] = useState("todas");
   const [filtroResponsavel, setFiltroResponsavel] = useState("todos");
   const [busca, setBusca] = useState("");
+  const [resultadosGlobais, setResultadosGlobais] = useState([]);
+const [buscandoGlobal, setBuscandoGlobal] = useState(false);
   const [logsAbertos, setLogsAbertos] = useState(false);
   const [logsGlobais, setLogsGlobais] = useState([]);
 
@@ -757,8 +759,41 @@ const payload = {
           <div className="nx-topbar-right">
             <div className="nx-search">
               <span className="nx-search-icon">⌕</span>
-              <input placeholder="Buscar demanda..." value={busca} onChange={(e) => setBusca(e.target.value)} />
+              <input
+             placeholder="Buscar demanda em todos os meses..."
+             value={busca}
+             onChange={(e) => buscarEmTodosMeses(e.target.value)}
+             />
             </div>
+            {busca.trim().length >= 2 && (
+  <div className="nx-search-global">
+    <strong>
+      {buscandoGlobal
+        ? "Pesquisando..."
+        : `${resultadosGlobais.length} resultado(s) encontrado(s)`}
+    </strong>
+
+    {resultadosGlobais.map((d) => (
+      <button
+        key={d.id}
+        className="nx-search-global-item"
+        onClick={() => {
+          setMesFiltro(d.mes_referencia);
+          setCanalAtivo(d.local || null);
+          setAba("kanban");
+          setResultadosGlobais([]);
+          setBusca("");
+          abrirEdicao(d);
+        }}
+      >
+        <span>{d.titulo}</span>
+        <small>
+          {d.local || "Sem setor"} • {d.mes_referencia} • {d.status?.replace(/_/g, " ")}
+        </small>
+      </button>
+    ))}
+  </div>
+)}
 
             <button className="nx-btn-ghost nx-logs-btn" onClick={() => setLogsAbertos((v) => !v)} title="Logs">
               ≋
@@ -857,6 +892,36 @@ const payload = {
                   </div>
                   {responsaveisUnicos.map((nome) => {
                     const total = demandas.filter((d) => d.respondido_por_nome === nome).length;
+                    async function buscarEmTodosMeses(valor) {
+  setBusca(valor);
+
+  const termo = valor.trim();
+
+  if (termo.length < 2) {
+    setResultadosGlobais([]);
+    return;
+  }
+
+  setBuscandoGlobal(true);
+
+  const { data, error } = await supabase
+    .from("demandas")
+    .select("*")
+    .or(
+      `titulo.ilike.%${termo}%,descricao.ilike.%${termo}%,solicitante_nome.ilike.%${termo}%,respondido_por_nome.ilike.%${termo}%,local.ilike.%${termo}%,resposta_executor.ilike.%${termo}%`
+    )
+    .order("mes_referencia", { ascending: false });
+
+  if (error) {
+    console.error(error);
+    showToast("Erro na busca: " + error.message, "erro");
+    setResultadosGlobais([]);
+  } else {
+    setResultadosGlobais(data || []);
+  }
+
+  setBuscandoGlobal(false);
+}
                     return (
                       <button key={nome} className="nx-alert-row" onClick={() => { setFiltroResponsavel(nome); setAba("kanban"); }}>
                         <strong>{nome}</strong>
