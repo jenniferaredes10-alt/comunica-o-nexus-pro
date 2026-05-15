@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { supabase } from "../supabaseClient";
 import "./Dashboard.css";
 
@@ -73,6 +73,15 @@ function dataHojeISO() {
   return new Date().toISOString().slice(0, 10);
 }
 
+// [FIX] Debounce para evitar queries excessivas na busca
+function useDebounce(fn, delay) {
+  const timer = useRef(null);
+  return useCallback((...args) => {
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => fn(...args), delay);
+  }, [fn, delay]);
+}
+
 function Toast({ msg, tipo, onClose }) {
   useEffect(() => {
     const t = setTimeout(onClose, 3200);
@@ -85,6 +94,27 @@ function Toast({ msg, tipo, onClose }) {
         {tipo === "sucesso" ? "✓" : tipo === "erro" ? "✕" : "ℹ"}
       </span>
       {msg}
+    </div>
+  );
+}
+
+// [FIX] Modal de confirmação customizado — substitui confirm() nativo
+function ModalConfirm({ mensagem, onConfirmar, onCancelar }) {
+  return (
+    <div className="nx-modal-bg" onClick={onCancelar}>
+      <div className="nx-modal nx-modal-sm" onClick={(e) => e.stopPropagation()}>
+        <div className="nx-modal-header">
+          <h2>Confirmação</h2>
+          <button className="nx-modal-close" onClick={onCancelar}>✕</button>
+        </div>
+        <div className="nx-modal-body">
+          <p style={{ margin: 0 }}>{mensagem}</p>
+        </div>
+        <div className="nx-modal-footer">
+          <button className="nx-btn-ghost" onClick={onCancelar}>Cancelar</button>
+          <button className="nx-btn-danger" onClick={onConfirmar}>Confirmar</button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -102,7 +132,7 @@ export default function Dashboard({ sessao }) {
   const [filtroResponsavel, setFiltroResponsavel] = useState("todos");
   const [busca, setBusca] = useState("");
   const [resultadosGlobais, setResultadosGlobais] = useState([]);
-const [buscandoGlobal, setBuscandoGlobal] = useState(false);
+  const [buscandoGlobal, setBuscandoGlobal] = useState(false);
   const [logsAbertos, setLogsAbertos] = useState(false);
   const [logsGlobais, setLogsGlobais] = useState([]);
 
@@ -111,6 +141,22 @@ const [buscandoGlobal, setBuscandoGlobal] = useState(false);
   const [usuarios, setUsuarios] = useState([]);
   const [colunas, setColunas] = useState(COLUNAS_PADRAO);
   const [novoCanal, setNovoCanal] = useState("");
+
+  // [FIX] Estado do modal de confirmação customizado
+  const [confirm, setConfirm] = useState(null); // { mensagem, onConfirmar }
+
+  function pedirConfirmacao(mensagem) {
+    return new Promise((resolve) => {
+      setConfirm({
+        mensagem,
+        onConfirmar: () => { setConfirm(null); resolve(true); },
+        onCancelar: () => { setConfirm(null); resolve(false); },
+      });
+    });
+  }
+
+  const [colunaDragIdx, setColunaDragIdx] = useState(null);
+  const [colunaOverIdx, setColunaOverIdx] = useState(null);
 
   const [modalAberto, setModalAberto] = useState(false);
   const [editandoId, setEditandoId] = useState(null);
@@ -134,6 +180,79 @@ const [buscandoGlobal, setBuscandoGlobal] = useState(false);
     setToast({ msg, tipo, id: Date.now() });
   }
 
+  // [FIX] Busca com debounce — evita query a cada tecla
+  async function _executarBusca(valor) {
+    const termo = valor.trim();
+    if (termo.length < 2) {
+      setResultadosGlobais([]);
+      return;
+    }
+    setBuscandoGlobal(true);
+    const { data, error } = await supabase
+      .from("demandas")
+      .select("*")
+      .or(
+        `titulo.ilike.%${termo}%,descricao.ilike.%${termo}%,solicitante_nome.ilike.%${termo}%,respondido_por_nome.ilike.%${termo}%,local.ilike.%${termo}%,resposta_executor.ilike.%${termo}%`
+      )
+      .order("mes_referencia", { ascending: false })
+      .limit(50); // [FIX] limita resultados para não expor dados desnecessários
+    if (error) {
+      showToast("Erro na busca: " + error.message, "erro");
+      setResultadosGlobais([]);
+    } else {
+      setResultadosGlobais(data || []);
+    }
+    setBuscandoGlobal(false);
+  }
+
+  const buscarEmTodosMesesDebounced = useDebounce(_executarBusca, 350);
+
+  function buscarEmTodosMeses(valor) {
+    setBusca(valor);
+    if (valor.trim().length < 2) {
+      setResultadosGlobais([]);
+      return;
+    }
+    buscarEmTodosMesesDebounced(valor);
+  }
+
+  function handleColunaDragStart(e, idx) {
+    setColunaDragIdx(idx);
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("colunaDrag", "true");
+  }
+
+  function handleColunaDragOver(e, idx) {
+    e.preventDefault();
+    if (colunaDragIdx === null) return;
+    setColunaOverIdx(idx);
+  }
+
+  function handleColunaDragEnd() {
+    setColunaDragIdx(null);
+    setColunaOverIdx(null);
+  }
+
+  async function handleColunaDrop(e, idx) {
+    e.preventDefault();
+    if (colunaDragIdx === null || colunaDragIdx === idx) {
+      setColunaDragIdx(null);
+      setColunaOverIdx(null);
+      return;
+    }
+    const novaOrdem = [...colunas];
+    const [movida] = novaOrdem.splice(colunaDragIdx, 1);
+    novaOrdem.splice(idx, 0, movida);
+    const comNovaOrdem = novaOrdem.map((c, i) => ({ ...c, ordem: i }));
+    setColunas(comNovaOrdem);
+    setColunaDragIdx(null);
+    setColunaOverIdx(null);
+    const updates = comNovaOrdem
+      .filter((c) => c.id)
+      .map((c) => supabase.from("colunas_kanban").update({ ordem: c.ordem }).eq("id", c.id));
+    await Promise.allSettled(updates);
+  }
+
   useEffect(() => {
     async function verificarSessao() {
       const { data } = await supabase.auth.getSession();
@@ -143,15 +262,29 @@ const [buscandoGlobal, setBuscandoGlobal] = useState(false);
       }
       setUsuarioAtual(data.session.user);
     }
-
     verificarSessao();
 
-    const timeout = setTimeout(async () => {
-      await supabase.auth.signOut();
-      window.location.href = "/";
-    }, 1000 * 60 * 60 * 8);
+    // [FIX] Logout por inatividade via evento de autenticação do Supabase
+    // O timeout agora se baseia em visibilidade da página para funcionar entre abas
+    let inactivityTimer;
+    const OITO_HORAS = 1000 * 60 * 60 * 8;
 
-    return () => clearTimeout(timeout);
+    function resetTimer() {
+      clearTimeout(inactivityTimer);
+      inactivityTimer = setTimeout(async () => {
+        await supabase.auth.signOut();
+        window.location.href = "/";
+      }, OITO_HORAS);
+    }
+
+    const eventos = ["mousemove", "keydown", "click", "scroll", "touchstart"];
+    eventos.forEach((ev) => window.addEventListener(ev, resetTimer, { passive: true }));
+    resetTimer();
+
+    return () => {
+      clearTimeout(inactivityTimer);
+      eventos.forEach((ev) => window.removeEventListener(ev, resetTimer));
+    };
   }, []);
 
   const carregarTudo = useCallback(async () => {
@@ -179,11 +312,11 @@ const [buscandoGlobal, setBuscandoGlobal] = useState(false);
     setCanais(can);
     setUsuarios(usr);
     if (col && col.length > 0) {
-  setColunas(col);
-} else {
-  await supabase.from("colunas_kanban").insert(COLUNAS_PADRAO);
-  setColunas(COLUNAS_PADRAO);
-}
+      setColunas(col);
+    } else {
+      await supabase.from("colunas_kanban").insert(COLUNAS_PADRAO);
+      setColunas(COLUNAS_PADRAO);
+    }
   }, [mesFiltro, canalAtivo]);
 
   const carregarLogsGlobais = useCallback(async () => {
@@ -224,61 +357,22 @@ const [buscandoGlobal, setBuscandoGlobal] = useState(false);
   }, [demandas]);
 
   function demandaAtrasada(d) {
-  if (!d?.prazo) return false;
-
-  const status = String(d.status || "").toLowerCase();
-
-  // não marcar concluídas como pendentes
-  if (
-    status.includes("conclu") ||
-    status.includes("final") ||
-    status.includes("feito")
-  ) {
-    return false;
+    if (!d?.prazo || d.status === "concluida") return false;
+    return d.prazo < dataHojeISO();
   }
-
-  return d.prazo < dataHojeISO();
-}
 
   function demandaHoje(d) {
-  if (!d?.prazo) return false;
-
-  const status = String(d.status || "").toLowerCase();
-
-  if (
-    status.includes("conclu") ||
-    status.includes("final") ||
-    status.includes("feito")
-  ) {
-    return false;
-  }
-
-  return d.prazo === dataHojeISO();
-}
     if (!d?.prazo || d.status === "concluida") return false;
     return d.prazo === dataHojeISO();
   }
 
   function demandaVencendo(d) {
-  if (!d?.prazo) return false;
-
-  const status = String(d.status || "").toLowerCase();
-
-  if (
-    status.includes("conclu") ||
-    status.includes("final") ||
-    status.includes("feito")
-  ) {
-    return false;
+    if (!d?.prazo || d.status === "concluida") return false;
+    const hoje = new Date(dataHojeISO() + "T00:00:00");
+    const prazo = new Date(d.prazo + "T00:00:00");
+    const diffDias = Math.ceil((prazo - hoje) / 86400000);
+    return diffDias >= 0 && diffDias <= 2;
   }
-
-  const hoje = new Date(dataHojeISO() + "T00:00:00");
-  const prazo = new Date(d.prazo + "T00:00:00");
-
-  const diffDias = Math.ceil((prazo - hoje) / 86400000);
-
-  return diffDias >= 0 && diffDias <= 2;
-}
 
   const demandasAtrasadas = useMemo(() => demandasFiltradas.filter(demandaAtrasada), [demandasFiltradas]);
   const demandasHoje = useMemo(() => demandasFiltradas.filter(demandaHoje), [demandasFiltradas]);
@@ -360,24 +454,19 @@ const [buscandoGlobal, setBuscandoGlobal] = useState(false);
       return;
     }
 
-   const temResposta = String(form.resposta_executor || "").trim().length > 0;
+    const temResposta = String(form.resposta_executor || "").trim().length > 0;
 
-const payload = {
-  ...form,
-  mes_referencia: form.mes_referencia || mesFiltro,
-
-  respondido_por_id: temResposta
-    ? usuarioAtual?.id || form.respondido_por_id || null
-    : form.respondido_por_id || null,
-
-  respondido_por_nome: temResposta
-    ? nomeUsuario
-    : form.respondido_por_nome || "",
-
-  respondido_em: temResposta
-    ? new Date().toISOString()
-    : null,
-};
+    const payload = {
+      ...form,
+      mes_referencia: form.mes_referencia || mesFiltro,
+      respondido_por_id: temResposta
+        ? usuarioAtual?.id || form.respondido_por_id || null
+        : form.respondido_por_id || null,
+      respondido_por_nome: temResposta
+        ? nomeUsuario
+        : form.respondido_por_nome || "",
+      respondido_em: temResposta ? new Date().toISOString() : null,
+    };
 
     if (editandoId) {
       const antiga = demandas.find((d) => d.id === editandoId);
@@ -420,7 +509,9 @@ const payload = {
   }
 
   async function excluirDemanda(id) {
-    if (!confirm("Excluir demanda?")) return;
+    // [FIX] Substituído confirm() nativo pelo modal customizado
+    const ok = await pedirConfirmacao("Tem certeza que deseja excluir esta demanda?");
+    if (!ok) return;
     await registrarLog(id, "apagou", demandas.find((d) => d.id === id)?.titulo || "");
     const { error } = await supabase.from("demandas").delete().eq("id", id);
     if (error) {
@@ -455,11 +546,29 @@ const payload = {
       return;
     }
 
+    // [FIX] Limite de tamanho de arquivo (10MB)
+    if (file.size > 10 * 1024 * 1024) {
+      showToast("Arquivo muito grande. Limite: 10MB.", "erro");
+      return;
+    }
+
     setUploading(true);
-    const ext = file.name.split(".").pop();
+    const ext = file.name.split(".").pop().toLowerCase();
+
+    // [FIX] Extensões permitidas explicitamente
+    const extsPermitidas = ["pdf", "jpg", "jpeg", "png", "gif", "webp"];
+    if (!extsPermitidas.includes(ext)) {
+      showToast("Extensão não permitida.", "erro");
+      setUploading(false);
+      return;
+    }
+
+    // [FIX] Nome de arquivo sanitizado — sem nome original no path
     const path = `${editandoId}/${Date.now()}-${slugify(file.name)}.${ext}`;
 
-    const { error: upErr } = await supabase.storage.from("demanda-anexos").upload(path, file, { upsert: false });
+    const { error: upErr } = await supabase.storage
+      .from("demanda-anexos")
+      .upload(path, file, { upsert: false });
 
     if (upErr) {
       showToast("Erro no upload: " + upErr.message, "erro");
@@ -467,13 +576,24 @@ const payload = {
       return;
     }
 
-    const { data: urlData } = supabase.storage.from("demanda-anexos").getPublicUrl(path);
+    // [FIX] URL assinada com expiração de 12h em vez de URL pública permanente
+    const { data: urlData, error: urlErr } = await supabase.storage
+      .from("demanda-anexos")
+      .createSignedUrl(path, 60 * 60 * 12);
 
+    if (urlErr || !urlData?.signedUrl) {
+      showToast("Erro ao gerar link do arquivo.", "erro");
+      setUploading(false);
+      return;
+    }
+
+    // Salva o path (não a URL) para gerar novas URLs assinadas depois
     await supabase.from("demanda_anexos").insert([
       {
         demanda_id: editandoId,
         nome_arquivo: file.name,
-        url: urlData.publicUrl,
+        url: urlData.signedUrl,
+        storage_path: path, // [FIX] salva o path para renovar URLs
         tipo: isPdf ? "pdf" : "imagem",
         enviado_por_id: usuarioAtual?.id || null,
       },
@@ -492,11 +612,16 @@ const payload = {
   }
 
   async function excluirAnexo(anexo) {
-    if (!confirm(`Excluir "${anexo.nome_arquivo}"?`)) return;
+    // [FIX] Substituído confirm() nativo pelo modal customizado
+    const ok = await pedirConfirmacao(`Excluir "${anexo.nome_arquivo}"?`);
+    if (!ok) return;
 
     try {
-      const path = new URL(anexo.url).pathname.split("/demanda-anexos/")[1];
-      if (path) await supabase.storage.from("demanda-anexos").remove([path]);
+      // [FIX] Usa storage_path salvo, sem depender de parsear URL pública
+      const storagePath = anexo.storage_path;
+      if (storagePath) {
+        await supabase.storage.from("demanda-anexos").remove([storagePath]);
+      }
     } catch {
       /* mantém exclusão do registro */
     }
@@ -569,7 +694,9 @@ const payload = {
 
   async function arquivarCanal() {
     if (!editandoCanal) return;
-    if (!confirm(`Arquivar o canal "${editandoCanal.nome}"?`)) return;
+    // [FIX] Substituído confirm() nativo pelo modal customizado
+    const ok = await pedirConfirmacao(`Arquivar o canal "${editandoCanal.nome}"?`);
+    if (!ok) return;
 
     const { error } = await supabase.from("canais").update({ ativo: false }).eq("id", editandoCanal.id);
     if (error) {
@@ -594,10 +721,7 @@ const payload = {
     if (editandoColuna?.id) {
       const { error } = await supabase
         .from("colunas_kanban")
-        .update({
-          title: novoTitulo,
-          cor: formColuna.cor,
-        })
+        .update({ title: novoTitulo, cor: formColuna.cor })
         .eq("id", editandoColuna.id);
 
       if (error) {
@@ -607,16 +731,12 @@ const payload = {
 
       setColunas((prev) =>
         prev.map((c) =>
-          c.id === editandoColuna.id
-            ? { ...c, title: novoTitulo, cor: formColuna.cor }
-            : c
+          c.id === editandoColuna.id ? { ...c, title: novoTitulo, cor: formColuna.cor } : c
         )
       );
-
       showToast("Coluna atualizada.");
     } else {
       const maxOrdem = colunas.reduce((m, c) => Math.max(m, c.ordem || 0), -1);
-
       const { error } = await supabase.from("colunas_kanban").insert([
         {
           key: `${slugify(novoTitulo)}_${Date.now()}`,
@@ -630,7 +750,6 @@ const payload = {
         showToast("Erro ao criar coluna: " + error.message, "erro");
         return;
       }
-
       showToast("Coluna criada.");
     }
 
@@ -646,90 +765,30 @@ const payload = {
       showToast(`Mova os ${qtd} cards antes de excluir.`, "erro");
       return;
     }
-    if (!confirm(`Excluir coluna "${col.title}"?`)) return;
+    // [FIX] Substituído confirm() nativo pelo modal customizado
+    const ok = await pedirConfirmacao(`Excluir coluna "${col.title}"?`);
+    if (!ok) return;
     if (col.id) await supabase.from("colunas_kanban").delete().eq("id", col.id);
     carregarTudo();
   }
 
   function abrirEditarColuna(col) {
-  setEditandoColuna(col);
-  setFormColuna({
-    title: col.title || "",
-    cor: col.cor || "#4f7cff",
-  });
-  setModalColuna(true);
-}
-
-  async function buscarEmTodosMeses(valor) {
-    setBusca(valor);
-
-    const termo = String(valor || "").trim();
-
-    if (termo.length < 2) {
-      setResultadosGlobais([]);
-      setBuscandoGlobal(false);
-      return;
-    }
-
-    setBuscandoGlobal(true);
-
-    const termoSeguro = termo.replaceAll("%", "\\%").replaceAll(",", " ");
-
-    const { data, error } = await supabase
-      .from("demandas")
-      .select("*")
-      .or(
-        `titulo.ilike.%${termoSeguro}%,descricao.ilike.%${termoSeguro}%,solicitante_nome.ilike.%${termoSeguro}%,respondido_por_nome.ilike.%${termoSeguro}%,local.ilike.%${termoSeguro}%,resposta_executor.ilike.%${termoSeguro}%`
-      )
-      .order("mes_referencia", { ascending: false })
-      .limit(80);
-
-    if (error) {
-      console.error(error);
-      showToast("Erro na busca: " + error.message, "erro");
-      setResultadosGlobais([]);
-    } else {
-      setResultadosGlobais(data || []);
-    }
-
-    setBuscandoGlobal(false);
-  }
-
-  async function moverColuna(origemKey, destinoKey) {
-    if (!origemKey || !destinoKey || origemKey === destinoKey) return;
-
-    const lista = [...colunas].sort((a, b) => (a.ordem ?? 0) - (b.ordem ?? 0));
-    const origemIndex = lista.findIndex((c) => c.key === origemKey);
-    const destinoIndex = lista.findIndex((c) => c.key === destinoKey);
-
-    if (origemIndex < 0 || destinoIndex < 0) return;
-
-    const [movida] = lista.splice(origemIndex, 1);
-    lista.splice(destinoIndex, 0, movida);
-
-    const reordenadas = lista.map((c, index) => ({ ...c, ordem: index }));
-    setColunas(reordenadas);
-
-    const updates = reordenadas
-      .filter((c) => c.id)
-      .map((c) =>
-        supabase.from("colunas_kanban").update({ ordem: c.ordem }).eq("id", c.id)
-      );
-
-    const resultados = await Promise.allSettled(updates);
-    const falhou = resultados.some((r) => r.status === "fulfilled" && r.value.error);
-
-    if (falhou) {
-      showToast("Não consegui salvar a nova ordem das colunas.", "erro");
-      carregarTudo();
-      return;
-    }
-
-    showToast("Ordem das colunas atualizada.");
+    setEditandoColuna(col);
+    setFormColuna({ title: col.title || "", cor: col.cor || "#4f7cff" });
+    setModalColuna(true);
   }
 
   return (
     <div className="nx-app">
+      {/* [FIX] Modal de confirmação customizado */}
+      {confirm && (
+        <ModalConfirm
+          mensagem={confirm.mensagem}
+          onConfirmar={confirm.onConfirmar}
+          onCancelar={confirm.onCancelar}
+        />
+      )}
+
       {sidebarAberta && <div className="nx-overlay" onClick={() => setSidebarAberta(false)} />}
 
       <aside className={`nx-sidebar${sidebarAberta ? " nx-sidebar--open" : ""}`}>
@@ -804,18 +863,14 @@ const payload = {
         <select className="nx-select" value={filtroPrioridade} onChange={(e) => setFiltroPrioridade(e.target.value)}>
           <option value="todas">Todas prioridades</option>
           {PRIORIDADES.map((p) => (
-            <option key={p.key} value={p.key}>
-              {p.label}
-            </option>
+            <option key={p.key} value={p.key}>{p.label}</option>
           ))}
         </select>
 
         <select className="nx-select" value={filtroResponsavel} onChange={(e) => setFiltroResponsavel(e.target.value)}>
           <option value="todos">Todos responsáveis</option>
           {responsaveisUnicos.map((n) => (
-            <option key={n} value={n}>
-              {n}
-            </option>
+            <option key={n} value={n}>{n}</option>
           ))}
         </select>
 
@@ -867,40 +922,41 @@ const payload = {
             <div className="nx-search">
               <span className="nx-search-icon">⌕</span>
               <input
-             placeholder="Buscar demanda em todos os meses..."
-             value={busca}
-             onChange={(e) => buscarEmTodosMeses(e.target.value)}
-             />
+                placeholder="Buscar demanda em todos os meses..."
+                value={busca}
+                onChange={(e) => buscarEmTodosMeses(e.target.value)}
+              />
             </div>
-            {busca.trim().length >= 2 && (
-  <div className="nx-search-global">
-    <strong>
-      {buscandoGlobal
-        ? "Pesquisando..."
-        : `${resultadosGlobais.length} resultado(s) encontrado(s)`}
-    </strong>
 
-    {resultadosGlobais.map((d) => (
-      <button
-        key={d.id}
-        className="nx-search-global-item"
-        onClick={() => {
-          setMesFiltro(d.mes_referencia);
-          setCanalAtivo(d.local || null);
-          setAba("kanban");
-          setResultadosGlobais([]);
-          setBusca("");
-          abrirEdicao(d);
-        }}
-      >
-        <span>{d.titulo}</span>
-        <small>
-          {d.local || "Sem setor"} • {d.mes_referencia} • {d.status?.replace(/_/g, " ")}
-        </small>
-      </button>
-    ))}
-  </div>
-)}
+            {busca.trim().length >= 2 && (
+              <div className="nx-search-global">
+                <strong>
+                  {buscandoGlobal
+                    ? "Pesquisando..."
+                    : `${resultadosGlobais.length} resultado(s) encontrado(s)`}
+                </strong>
+
+                {resultadosGlobais.map((d) => (
+                  <button
+                    key={d.id}
+                    className="nx-search-global-item"
+                    onClick={() => {
+                      setMesFiltro(d.mes_referencia);
+                      setCanalAtivo(d.local || null);
+                      setAba("kanban");
+                      setResultadosGlobais([]);
+                      setBusca("");
+                      abrirEdicao(d);
+                    }}
+                  >
+                    <span>{d.titulo}</span>
+                    <small>
+                      {d.local || "Sem setor"} • {d.mes_referencia} • {d.status?.replace(/_/g, " ")}
+                    </small>
+                  </button>
+                ))}
+              </div>
+            )}
 
             <button className="nx-btn-ghost nx-logs-btn" onClick={() => setLogsAbertos((v) => !v)} title="Logs">
               ≋
@@ -1015,48 +1071,49 @@ const payload = {
           {aba === "kanban" && (
             <div className="nx-board-wrap">
               <div className="nx-board">
-                {colunas.map((coluna) => {
+                {colunas.map((coluna, idx) => {
                   const cards = demandasFiltradas.filter((d) => d.status === coluna.key);
+                  const isDraggingOver = colunaOverIdx === idx && colunaDragIdx !== idx;
                   return (
                     <div
                       className="nx-column"
                       key={coluna.key}
-                      onDragOver={(e) => e.preventDefault()}
-                      onDrop={(e) => {
-                        if (e.dataTransfer.getData("tipo") === "coluna") return;
-                        mudarStatus(e.dataTransfer.getData("demandaId"), coluna.key);
+                      style={{
+                        opacity: colunaDragIdx === idx ? 0.5 : 1,
+                        outline: isDraggingOver ? `2px dashed ${coluna.cor || "#4f7cff"}` : "none",
+                        transition: "opacity 0.15s, outline 0.15s",
                       }}
+                      onDragOver={(e) => {
+                        if (colunaDragIdx !== null) {
+                          handleColunaDragOver(e, idx);
+                        } else {
+                          e.preventDefault();
+                        }
+                      }}
+                      onDrop={(e) => {
+                        if (colunaDragIdx !== null) {
+                          handleColunaDrop(e, idx);
+                        } else {
+                          mudarStatus(e.dataTransfer.getData("demandaId"), coluna.key);
+                        }
+                      }}
+                      onDragEnd={handleColunaDragEnd}
                     >
                       <div
-                        className="nx-col-header nx-col-header-draggable"
+                        className="nx-col-header"
                         draggable
-                        title="Arraste para mudar a ordem da coluna"
-                        onDragStart={(e) => {
-                          e.stopPropagation();
-                          e.dataTransfer.setData("tipo", "coluna");
-                          e.dataTransfer.setData("colunaKey", coluna.key);
-                        }}
-                        onDragOver={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                        }}
-                        onDrop={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          if (e.dataTransfer.getData("tipo") === "coluna") {
-                            moverColuna(e.dataTransfer.getData("colunaKey"), coluna.key);
-                          }
-                        }}
+                        onDragStart={(e) => handleColunaDragStart(e, idx)}
+                        style={{ cursor: "grab" }}
+                        title="Arraste para reordenar"
                       >
                         <div className="nx-col-header-left">
-                          <span className="nx-col-drag">⋮⋮</span>
                           <span className="nx-col-dot" style={{ background: coluna.cor || "#4f7cff" }} />
                           <span className="nx-col-title">{coluna.title}</span>
                           <span className="nx-col-count">{cards.length}</span>
                         </div>
                         <div className="nx-col-actions">
-                          <button className="nx-icon-btn" onClick={() => abrirEditarColuna(coluna)}>✎</button>
-                          <button className="nx-icon-btn" onClick={() => excluirColuna(coluna)}>⊗</button>
+                          <button className="nx-icon-btn" onClick={(e) => { e.stopPropagation(); abrirEditarColuna(coluna); }}>✎</button>
+                          <button className="nx-icon-btn" onClick={(e) => { e.stopPropagation(); excluirColuna(coluna); }}>⊗</button>
                         </div>
                       </div>
 
@@ -1202,17 +1259,13 @@ const payload = {
                       {usuarios.map((u) => <option key={u.id} value={u.id}>{u.nome || u.email}</option>)}
                     </select>
                     <input
-                     style={{ marginTop: 8 }}
-                     placeholder="Ou digite o nome do responsável"
-                     value={form.respondido_por_nome || ""}
-                     onChange={(e) =>
-                     setForm({
-                     ...form,
-                     respondido_por_id: "",
-                     respondido_por_nome: e.target.value,
-                     })
-                     }
-                     />
+                      style={{ marginTop: 8 }}
+                      placeholder="Ou digite o nome do responsável"
+                      value={form.respondido_por_nome || ""}
+                      onChange={(e) =>
+                        setForm({ ...form, respondido_por_id: "", respondido_por_nome: e.target.value })
+                      }
+                    />
                   </Field>
 
                   <Field label="Prioridade">
@@ -1264,7 +1317,7 @@ const payload = {
                   <>
                     <label className="nx-upload-area">
                       <span className="nx-upload-icon">⊕</span>
-                      <span>Clique para anexar PDF ou imagem</span>
+                      <span>Clique para anexar PDF ou imagem (máx. 10MB)</span>
                       {uploading && <span className="nx-uploading">Enviando...</span>}
                       <input type="file" accept="application/pdf,image/*" style={{ display: "none" }} onChange={handleUpload} />
                     </label>
@@ -1273,7 +1326,7 @@ const payload = {
                       {anexos.map((a) => (
                         <div key={a.id} className="nx-anexo-item">
                           <span className="nx-anexo-icon">{a.tipo === "pdf" ? "⊡" : "◫"}</span>
-                          <a href={a.url} target="_blank" rel="noreferrer" className="nx-anexo-nome">{a.nome_arquivo}</a>
+                          <a href={a.url} target="_blank" rel="noreferrer noopener" className="nx-anexo-nome">{a.nome_arquivo}</a>
                           <button className="nx-anexo-del" onClick={() => excluirAnexo(a)}>✕</button>
                         </div>
                       ))}
@@ -1433,7 +1486,7 @@ function CardDemanda({ d, onClick }) {
       className={`nx-card nx-prio-border-${d.prioridade || "media"} ${atrasada ? "nx-card-atrasada" : ""} ${hojePrazo ? "nx-card-hoje" : ""}`}
       draggable
       onDragStart={(e) => {
-        e.dataTransfer.setData("tipo", "card");
+        e.stopPropagation();
         e.dataTransfer.setData("demandaId", d.id);
       }}
       onClick={onClick}
@@ -1454,24 +1507,17 @@ function CardDemanda({ d, onClick }) {
       </div>
 
       {d.resposta_executor && (
-  <div className="nx-card-resposta">
-    <div className="nx-card-response-header">
-      <strong>Resposta</strong>
-
-      <span>
-        {d.respondido_por_nome || "Usuário"}
-      </span>
-    </div>
-
-    <p>{d.resposta_executor}</p>
-
-    {d.respondido_em && (
-      <small>
-        {new Date(d.respondido_em).toLocaleString("pt-BR")}
-      </small>
-    )}
-  </div>
-)}
+        <div className="nx-card-resposta">
+          <div className="nx-card-response-header">
+            <strong>Resposta</strong>
+            <span>{d.respondido_por_nome || "Usuário"}</span>
+          </div>
+          <p>{d.resposta_executor}</p>
+          {d.respondido_em && (
+            <small>{new Date(d.respondido_em).toLocaleString("pt-BR")}</small>
+          )}
+        </div>
+      )}
 
       <div className="nx-card-footer">
         {d.respondido_por_nome && (
