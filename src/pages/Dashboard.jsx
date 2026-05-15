@@ -224,22 +224,61 @@ const [buscandoGlobal, setBuscandoGlobal] = useState(false);
   }, [demandas]);
 
   function demandaAtrasada(d) {
-    if (!d?.prazo || d.status === "concluida") return false;
-    return d.prazo < dataHojeISO();
+  if (!d?.prazo) return false;
+
+  const status = String(d.status || "").toLowerCase();
+
+  // não marcar concluídas como pendentes
+  if (
+    status.includes("conclu") ||
+    status.includes("final") ||
+    status.includes("feito")
+  ) {
+    return false;
   }
 
+  return d.prazo < dataHojeISO();
+}
+
   function demandaHoje(d) {
+  if (!d?.prazo) return false;
+
+  const status = String(d.status || "").toLowerCase();
+
+  if (
+    status.includes("conclu") ||
+    status.includes("final") ||
+    status.includes("feito")
+  ) {
+    return false;
+  }
+
+  return d.prazo === dataHojeISO();
+}
     if (!d?.prazo || d.status === "concluida") return false;
     return d.prazo === dataHojeISO();
   }
 
   function demandaVencendo(d) {
-    if (!d?.prazo || d.status === "concluida") return false;
-    const hoje = new Date(dataHojeISO() + "T00:00:00");
-    const prazo = new Date(d.prazo + "T00:00:00");
-    const diffDias = Math.ceil((prazo - hoje) / 86400000);
-    return diffDias >= 0 && diffDias <= 2;
+  if (!d?.prazo) return false;
+
+  const status = String(d.status || "").toLowerCase();
+
+  if (
+    status.includes("conclu") ||
+    status.includes("final") ||
+    status.includes("feito")
+  ) {
+    return false;
   }
+
+  const hoje = new Date(dataHojeISO() + "T00:00:00");
+  const prazo = new Date(d.prazo + "T00:00:00");
+
+  const diffDias = Math.ceil((prazo - hoje) / 86400000);
+
+  return diffDias >= 0 && diffDias <= 2;
+}
 
   const demandasAtrasadas = useMemo(() => demandasFiltradas.filter(demandaAtrasada), [demandasFiltradas]);
   const demandasHoje = useMemo(() => demandasFiltradas.filter(demandaHoje), [demandasFiltradas]);
